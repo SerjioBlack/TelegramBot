@@ -1,10 +1,28 @@
 const TelegramApi = require('node-telegram-bot-api');
+const OpenAI = require('openai');
 const axios = require('axios');
-const FormData = require('form-data');
 const { gameOptions, againOptions } = require('./options');
-const token = '7180507295:AAGWCc1yuCm4snIbuV3rmqcF5jiCgpKQmLU';
+require('dotenv').config();
+
+const token = process.env.TELEGRAM_TOKEN;
+const openAiApiKey = process.env.OPENAI_API_KEY;
+
+if (!token) {
+    console.error('TELEGRAM_TOKEN is not defined');
+    process.exit(1);
+}
+if (!openAiApiKey) {
+    console.error('OPENAI_API_KEY is not defined');
+    process.exit(1);
+}
+
+console.log('TELEGRAM_TOKEN:', token);
+console.log('OPENAI_API_KEY:', openAiApiKey);
 
 const bot = new TelegramApi(token, { polling: true });
+
+const openaiClient = new OpenAI(openAiApiKey);
+
 const chats = {};
 
 const startGame = async (chatId) => {
@@ -15,7 +33,7 @@ const startGame = async (chatId) => {
 };
 
 const handleImageUpload = async (chatId, photo) => {
-    const fileId = photo[photo.length - 1].file_id; // Get the highest resolution photo
+    const fileId = photo[photo.length - 1].file_id;
     const file = await bot.getFile(fileId);
     const filePath = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
 
@@ -23,10 +41,13 @@ const handleImageUpload = async (chatId, photo) => {
         const form = new FormData();
         form.append('file', axios.get(filePath, { responseType: 'stream' }).then(res => res.data));
 
+        const contentLength = form.getLengthSync();
+
         const response = await axios.post('https://api.openai.com/v1/images', form, {
             headers: {
-                'Authorization': `sk-proj-Inaof4AIx2VGabIyRBEvT3BlbkFJfuyewKU0ZGXiDoMUUzdV`,
-                ...form.getHeaders()
+                'Authorization': `Bearer ${openAiApiKey}`,
+                'Content-Type': `multipart/form-data; boundary=${form._boundary}`,
+                'Content-Length': contentLength
             }
         });
 
@@ -38,17 +59,48 @@ const handleImageUpload = async (chatId, photo) => {
     }
 };
 
+
+const askQuestion = async (chatId, question) => {
+    try {
+        const OpenAI = require('openai');
+        const openai = new OpenAI(openAiApiKey);
+
+        const stream = await openai.chat.completions.create({
+            model: "gpt-3.5-turbo",
+            messages: [{ role: "user", content: question }],
+            stream: true,
+        });
+
+        let response = "";
+        for await (const chunk of stream) {
+            response += chunk.choices[0]?.delta?.content || "";
+        }
+
+        await bot.sendMessage(chatId, response.trim());
+    } catch (error) {
+        console.error('Error fetching answer:', error);
+        await bot.sendMessage(chatId, 'Произошла ошибка при обработке вопроса. Попробуйте еще раз.');
+    }
+};
+
 const start = () => {
     bot.setMyCommands([
         { command: '/start', description: 'Starting greet' },
         { command: '/info', description: 'Get info about user' },
         { command: '/game', description: 'Игра Угадай Цифру' },
         { command: '/upload_image', description: 'Загрузить изображение' },
+        { command: '/ask', description: 'Задать вопрос боту' },
     ]);
 
     bot.on('message', async (msg) => {
+        if (!msg.text) {
+            return;
+        }
+
         const text = msg.text;
         const chatId = msg.chat.id;
+
+        console.log(`Received message: ${text} from chat: ${chatId}`);
 
         if (text === '/start') {
             await bot.sendSticker(chatId, 'https://tlgrm.ru/_/stickers/ea5/382/ea53826d-c192-376a-b766-e5abc535f1c9/7.webp');
@@ -62,6 +114,15 @@ const start = () => {
         }
         if (text === '/upload_image') {
             return bot.sendMessage(chatId, 'Пожалуйста, загрузите изображение.');
+        }
+        if (text.startsWith('/ask ')) {
+            const question = text.slice(5).trim();
+            console.log(`Received question: ${question}`);
+            if (question) {
+                return askQuestion(chatId, question);
+            } else {
+                return bot.sendMessage(chatId, 'Пожалуйста, введите вопрос после команды /ask.');
+            }
         }
         return bot.sendMessage(chatId, 'I don\'t understand, select another command');
     });
